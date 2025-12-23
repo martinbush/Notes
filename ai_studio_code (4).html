@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Notes</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Google Identity Services -->
+    <script src="https://accounts.google.com/gsi/client" onload="initGis()"></script>
+    
+    <style>
+        body { font-family: 'Inter', sans-serif; color: #37352F; -webkit-font-smoothing: antialiased; }
+        [x-cloak] { display: none !important; }
+        .note-row:hover { background-color: #F8FBFF; }
+        .input-underline { border-bottom: 1px solid #E1E1E0; transition: border-color 0.2s ease; }
+        .input-underline:focus-within { border-bottom: 2px solid #2383E2; }
+        textarea:focus, input:focus { outline: none; }
+        .markdown-body h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; }
+        .markdown-body p { margin-bottom: 0.5rem; line-height: 1.6; }
+        .hashtag { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 0.82em; font-weight: 600; margin-right: 4px; cursor: pointer; transition: opacity 0.2s; }
+        .hashtag:hover { opacity: 0.7; }
+        
+        /* Sync Indicator Animation */
+        .syncing-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .dot-green { background: #22c55e; }
+        .dot-yellow { background: #eab308; animation: pulse 1s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+    </style>
+</head>
+<body class="bg-white" x-data="noteApp()" x-init="init()">
+
+    <!-- Deletion Confirmation Modal -->
+    <div x-show="showDeleteModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/10 backdrop-blur-[2px]" x-transition x-cloak>
+        <div @click.away="cancelDelete()" class="bg-white rounded-lg shadow-xl max-w-sm w-full p-6 border border-gray-100">
+            <h3 class="text-lg font-bold mb-2">Delete note?</h3>
+            <p class="text-sm text-gray-500 mb-6 leading-relaxed">This will permanently remove the note from Drive.</p>
+            <div class="flex justify-end gap-3">
+                <button @click="cancelDelete()" class="px-4 py-2 text-sm font-medium text-gray-500 hover:bg-gray-100 rounded-md">Cancel</button>
+                <button @click="confirmDelete()" class="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-md">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Header Section -->
+    <header class="max-w-2xl mx-auto px-6 pt-24 pb-4">
+        <div class="flex justify-between items-start mb-2">
+            <div>
+                <h1 class="text-4xl font-bold tracking-tight">My Notes</h1>
+                <!-- Sync Status -->
+                <div class="flex items-center mt-2 text-[10px] uppercase font-bold tracking-widest transition-colors"
+                     :class="isSignedIn ? 'text-gray-400' : 'text-red-400'">
+                    <span :class="syncStatus === 'syncing' ? 'dot-yellow' : 'dot-green'" class="syncing-dot"></span>
+                    <span x-text="syncStatusText"></span>
+                    <button x-show="!isSignedIn" @click="signIn()" class="ml-2 underline text-blue-500">Sign in to Sync</button>
+                </div>
+            </div>
+            
+            <div class="flex items-center">
+                <div x-show="searchOpen" x-transition x-cloak class="mr-2">
+                    <input type="text" x-model="searchQuery" placeholder="Search..." 
+                           class="text-sm bg-gray-50 border border-gray-200 px-3 py-1 rounded-md w-48 focus:border-blue-400">
+                </div>
+                <button @click="toggleSearch()" class="p-2 hover:bg-gray-100 rounded-md text-gray-400 hover:text-gray-600">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                </button>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-2 h-8">
+            <template x-if="activeFilter">
+                <div class="flex items-center gap-2 bg-blue-50 text-[#2383E2] px-2 py-1 rounded border border-blue-100 text-xs font-semibold">
+                    <span>Filter: <span x-text="activeFilter"></span></span>
+                    <button @click="activeFilter = null" class="hover:bg-blue-100 rounded p-0.5"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+                </div>
+            </template>
+            <button x-show="activeFilter || searchQuery" @click="clearFilters()" class="text-[10px] font-bold text-gray-400 hover:text-gray-600 uppercase tracking-widest">Show all</button>
+        </div>
+    </header>
+
+    <main class="max-w-2xl mx-auto px-6 pb-40">
+        <!-- New Note Input -->
+        <div class="mb-16 group">
+            <div class="input-underline py-2">
+                <textarea x-model="newNoteContent" 
+                    @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); addNote(); }"
+                    placeholder="Type something..." 
+                    class="w-full text-lg leading-relaxed bg-transparent border-none p-0 resize-none h-auto overflow-hidden placeholder-gray-300"
+                    rows="1" @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"></textarea>
+            </div>
+            <div x-show="newNoteContent.trim().length > 0" x-cloak class="mt-3 flex justify-between items-center">
+                <button @click="addNote()" class="text-xs font-bold text-[#2383E2] uppercase tracking-wider">Save Note</button>
+                <span class="text-[10px] text-gray-400 font-medium">Return to save • Shift+Return for newline</span>
+            </div>
+        </div>
+
+        <div class="space-y-1">
+            <template x-for="note in filteredNotes" :key="note.id">
+                <div class="note-row group relative -mx-4 px-4 py-6 rounded-lg transition-all duration-200">
+                    <div class="flex items-baseline gap-6">
+                        <div class="w-24 flex-shrink-0 pt-1">
+                            <span class="text-[10px] font-bold text-gray-300 uppercase whitespace-nowrap" x-text="formatDate(note.updatedAt)"></span>
+                        </div>
+
+                        <div class="flex-grow pr-12">
+                            <div x-show="editingId !== note.id">
+                                <div class="markdown-body text-[15px]" x-html="renderCleanContent(note.content)"></div>
+                                <div class="mt-4 flex flex-wrap gap-1" x-show="extractTags(note.content).length > 0">
+                                    <template x-for="tag in extractTags(note.content)">
+                                        <span @click="activeFilter = tag" :class="getTagStyle(tag)" class="hashtag" x-text="tag"></span>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <div x-show="editingId === note.id" x-cloak>
+                                <textarea x-model="editValue" @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); saveEdit(note.id); }"
+                                    class="w-full text-[15px] bg-white border border-blue-100 p-3 rounded-md shadow-sm outline-none ring-2 ring-blue-50" rows="3"
+                                    x-init="$watch('editingId', v => v === note.id && $nextTick(() => $el.focus()))"></textarea>
+                                <div class="mt-2 flex gap-4">
+                                    <button @click="saveEdit(note.id)" class="text-[11px] font-bold text-blue-600 uppercase">Update</button>
+                                    <button @click="editingId = null" class="text-[11px] font-bold text-gray-400 uppercase">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="absolute right-4 top-6 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button @click="shareGmail(note)" title="Gmail" class="text-gray-300 hover:text-blue-500 p-1">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+                            </button>
+                            <button @click="startEdit(note)" title="Edit" class="text-gray-300 hover:text-blue-500 p-1">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                            </button>
+                            <button @click="promptDelete(note.id)" title="Delete" class="text-gray-300 hover:text-red-500 p-1">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </main>
+
+    <script>
+        // CONFIGURATION
+        const CLIENT_ID = 'YOUR_CLIENT_ID_HERE'; // <--- REPLACE THIS
+        const FILENAME = 'notes.json';
+        let tokenClient;
+        let accessToken = null;
+
+        function initGis() {
+            tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: CLIENT_ID,
+                scope: 'https://www.googleapis.com/auth/drive.appdata',
+                callback: (resp) => {
+                    if (resp.access_token) {
+                        accessToken = resp.access_token;
+                        window.dispatchEvent(new CustomEvent('signed-in'));
+                    }
+                },
+            });
+        }
+
+        function noteApp() {
+            return {
+                notes: [],
+                db: null,
+                isSignedIn: false,
+                syncStatus: 'idle',
+                syncStatusText: 'Local Mode',
+                searchOpen: false,
+                searchQuery: '',
+                activeFilter: null,
+                newNoteContent: '',
+                editingId: null,
+                editValue: '',
+                showDeleteModal: false,
+                noteIdToDelete: null,
+                driveFileId: null,
+                tagColors: ['bg-red-100 text-red-800', 'bg-blue-100 text-blue-800', 'bg-green-100 text-green-800', 'bg-amber-100 text-amber-800', 'bg-purple-100 text-purple-800', 'bg-rose-100 text-rose-800', 'bg-indigo-100 text-indigo-800', 'bg-emerald-100 text-emerald-800', 'bg-orange-100 text-orange-800', 'bg-cyan-100 text-cyan-800'],
+
+                async init() {
+                    marked.setOptions({ breaks: true, gfm: true });
+                    await this.initIndexedDB();
+                    await this.loadLocal();
+
+                    window.addEventListener('signed-in', () => {
+                        this.isSignedIn = true;
+                        this.syncWithDrive();
+                    });
+                },
+
+                // 1. INDEXEDDB SETUP
+                initIndexedDB() {
+                    return new Promise((resolve) => {
+                        const request = indexedDB.open("NotesAppDB", 1);
+                        request.onupgradeneeded = (e) => {
+                            const db = e.target.result;
+                            if (!db.objectStoreNames.contains("state")) {
+                                db.createObjectStore("state");
+                            }
+                        };
+                        request.onsuccess = (e) => {
+                            this.db = e.target.result;
+                            resolve();
+                        };
+                    });
+                },
+
+                async loadLocal() {
+                    const tx = this.db.transaction("state", "readonly");
+                    const store = tx.objectStore("state");
+                    const data = await new Promise(r => {
+                        const req = store.get("notes_json");
+                        req.onsuccess = () => r(req.result);
+                    });
+                    if (data) this.notes = JSON.parse(data);
+                },
+
+                async saveLocal() {
+                    const tx = this.db.transaction("state", "readwrite");
+                    const store = tx.objectStore("state");
+                    store.put(JSON.stringify(this.notes), "notes_json");
+                    if (this.isSignedIn) this.syncToDriveDebounced();
+                },
+
+                // 2. GOOGLE DRIVE SYNC
+                signIn() {
+                    tokenClient.requestAccessToken({ prompt: 'consent' });
+                },
+
+                async syncWithDrive() {
+                    this.syncStatus = 'syncing';
+                    this.syncStatusText = 'Fetching from Drive...';
+                    try {
+                        // Find file
+                        const listResp = await fetch(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='${FILENAME}'`, {
+                            headers: { Authorization: `Bearer ${accessToken}` }
+                        });
+                        const list = await listResp.json();
+                        
+                        if (list.files.length > 0) {
+                            this.driveFileId = list.files[0].id;
+                            const fileResp = await fetch(`https://www.googleapis.com/drive/v3/files/${this.driveFileId}?alt=media`, {
+                                headers: { Authorization: `Bearer ${accessToken}` }
+                            });
+                            const driveNotes = await fileResp.json();
+                            this.mergeNotes(driveNotes);
+                        } else {
+                            await this.createDriveFile();
+                        }
+                        this.syncStatus = 'idle';
+                        this.syncStatusText = 'Synced with Drive';
+                    } catch (e) {
+                        this.syncStatusText = 'Sync Error';
+                        console.error(e);
+                    }
+                },
+
+                mergeNotes(driveNotes) {
+                    // Conflict Resolution: Latest timestamp wins per note ID
+                    const localMap = new Map(this.notes.map(n => [n.id, n]));
+                    driveNotes.forEach(dn => {
+                        const local = localMap.get(dn.id);
+                        if (!local || dn.updatedAt > local.updatedAt) {
+                            localMap.set(dn.id, dn);
+                        }
+                    });
+                    this.notes = Array.from(localMap.values()).sort((a,b) => b.updatedAt - a.updatedAt);
+                    this.saveLocal();
+                },
+
+                async createDriveFile() {
+                    const metadata = { name: FILENAME, parents: ['appDataFolder'] };
+                    const form = new FormData();
+                    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+                    form.append('file', new Blob([JSON.stringify(this.notes)], { type: 'application/json' }));
+
+                    const resp = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+                        method: 'POST',
+                        headers: { Authorization: `Bearer ${accessToken}` },
+                        body: form
+                    });
+                    const data = await resp.json();
+                    this.driveFileId = data.id;
+                },
+
+                syncToDriveDebounced: debounce(async function() {
+                    if (!accessToken || !this.driveFileId) return;
+                    this.syncStatus = 'syncing';
+                    this.syncStatusText = 'Saving to Drive...';
+                    try {
+                        await fetch(`https://www.googleapis.com/upload/drive/v3/files/${this.driveFileId}?uploadType=media`, {
+                            method: 'PATCH',
+                            headers: { 
+                                Authorization: `Bearer ${accessToken}`,
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(this.notes)
+                        });
+                        this.syncStatus = 'idle';
+                        this.syncStatusText = 'Cloud Saved';
+                    } catch (e) {
+                        this.syncStatusText = 'Cloud Save Failed';
+                    }
+                }, 2000),
+
+                // 3. CORE APP LOGIC
+                get filteredNotes() {
+                    let items = this.notes;
+                    if (this.activeFilter) items = items.filter(n => this.extractTags(n.content).includes(this.activeFilter));
+                    if (this.searchQuery) items = items.filter(n => n.content.toLowerCase().includes(this.searchQuery.toLowerCase()));
+                    return items;
+                },
+
+                addNote() {
+                    if (!this.newNoteContent.trim()) return;
+                    const now = Date.now();
+                    this.notes.unshift({ 
+                        id: now, 
+                        content: this.newNoteContent, 
+                        updatedAt: now 
+                    });
+                    this.newNoteContent = '';
+                    this.saveLocal();
+                },
+
+                saveEdit(id) {
+                    const idx = this.notes.findIndex(n => n.id === id);
+                    if (idx !== -1) {
+                        this.notes[idx].content = this.editValue;
+                        this.notes[idx].updatedAt = Date.now();
+                        this.editingId = null;
+                        this.saveLocal();
+                    }
+                },
+
+                confirmDelete() {
+                    this.notes = this.notes.filter(n => n.id !== this.noteIdToDelete);
+                    this.saveLocal();
+                    this.cancelDelete();
+                },
+
+                // UTILITIES
+                formatDate(ts) {
+                    const d = new Date(ts);
+                    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + 
+                           d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                },
+                extractTags(c) {
+                    const m = c.match(/(^|\s)#(\w+)/g);
+                    return m ? [...new Set(m.map(t => t.trim().toLowerCase()))] : [];
+                },
+                renderCleanContent(c) {
+                    let cleaned = c.replace(/(^|\s)#\w+/g, ' ').replace(/\s+/g, ' ').trim();
+                    return marked.parse(cleaned || c);
+                },
+                getTagStyle(tag) {
+                    let h = 0; for (let i = 0; i < tag.length; i++) h = tag.charCodeAt(i) + ((h << 5) - h);
+                    return this.tagColors[Math.abs(h) % this.tagColors.length];
+                },
+                toggleSearch() { this.searchOpen = !this.searchOpen; },
+                clearFilters() { this.activeFilter = null; this.searchQuery = ''; },
+                promptDelete(id) { this.noteIdToDelete = id; this.showDeleteModal = true; },
+                cancelDelete() { this.showDeleteModal = false; },
+                startEdit(n) { this.editingId = n.id; this.editValue = n.content; },
+                shareGmail(n) {
+                    const subj = encodeURIComponent(n.content.substring(0, 100).replace(/(^|\s)#\w+/g, '').trim() || "Note");
+                    const body = encodeURIComponent(n.content);
+                    window.open(`https://mail.google.com/mail/?view=cm&fs=1&to=target@email.com&su=${subj}&body=${body}`, '_blank');
+                }
+            }
+        }
+
+        function debounce(func, wait) {
+            let timeout;
+            return function(...args) {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(this, args), wait);
+            };
+        }
+    </script>
+</body>
+</html>
